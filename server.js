@@ -1,21 +1,23 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const { v4: uuidv4 } = require('uuid');
 require('dotenv').config(); // Load environment variables
 
-const app = express();
+// Load environment variables
+if (!process.env.MONGODB_URI) {
+  console.error('Error: MONGODB_URI is not defined in .env file');
+  process.exit(1); // Exit the application if MongoDB URI is not defined
+}
 
+const app = express();
 app.use(express.json());
 app.use(cors());
 
 // Connect to MongoDB using the URI from the environment variable
 mongoose.connect(process.env.MONGODB_URI)
-  .then(() => {
-    console.log("DB connected");
-  })
-  .catch((err) => {
-    console.log(err);
-  });
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB connection error:', err));
 
 // Define the Invoice Schema
 const invoiceSchema = new mongoose.Schema({
@@ -27,17 +29,46 @@ const invoiceSchema = new mongoose.Schema({
 
 const invoiceModel = mongoose.model('Invoice', invoiceSchema);
 
-// Middleware to validate the API key from query parameters
-const expectedApiKey = "PMAK-66fa416262258b0001fb20b3-4a77abb7ff9808f68a315ad7e71f4c1ddc";
+// Define the ApiKey Schema
+const apiKeySchema = new mongoose.Schema({
+  key: { required: true, type: String, unique: true },
+  userId: { required: true, type: String }, // You can adjust this as per your user model
+});
 
-const apiKeyMiddleware = (req, res, next) => {
-  const apiKey = req.query.apiKey; // Get the API key from query parameters
+const ApiKey = mongoose.model('ApiKey', apiKeySchema);
 
-  if (apiKey && apiKey === expectedApiKey) {
-    next(); // Valid API key, proceed to the next middleware/route handler
-  } else {
-    res.status(403).json({ message: "Invalid API key" }); // Forbidden
+// Route to generate API key
+app.post('/generate-api-key', async (req, res) => {
+  const { userId } = req.body; // Assume user ID is sent in the request body
+
+  // Generate a unique API key
+  const apiKey = uuidv4();
+
+  // Save the API key in MongoDB
+  const newApiKey = new ApiKey({ key: apiKey, userId });
+
+  try {
+    await newApiKey.save();
+    res.status(201).json({ apiKey });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to generate API key' });
   }
+});
+
+// Middleware to validate API key from query parameters
+const validateApiKey = async (req, res, next) => {
+  const apiKey = req.query.apiKey; // Get the API key from the query parameter
+
+  if (!apiKey) {
+    return res.status(401).json({ error: 'API key is required' });
+  }
+
+  const validKey = await ApiKey.findOne({ key: apiKey });
+  if (!validKey) {
+    return res.status(401).json({ error: 'Invalid API key' });
+  }
+
+  next(); // Proceed to the next middleware or route handler
 };
 
 // Create a new invoice (no API key required for creation)
@@ -55,7 +86,7 @@ app.post('/invoices', async (req, res) => {
 });
 
 // Get all invoices with API key validation
-app.get('/invoices', apiKeyMiddleware, async (req, res) => {
+app.get('/invoices', validateApiKey, async (req, res) => {
   try {
     const invoices = await invoiceModel.find();
     res.json(invoices);
@@ -66,7 +97,7 @@ app.get('/invoices', apiKeyMiddleware, async (req, res) => {
 });
 
 // Update an invoice with API key validation
-app.put('/invoices/:id', apiKeyMiddleware, async (req, res) => {
+app.put('/invoices/:id', validateApiKey, async (req, res) => {
   const { title, description, amount, dueDate } = req.body;
   const id = req.params.id;
 
@@ -89,7 +120,7 @@ app.put('/invoices/:id', apiKeyMiddleware, async (req, res) => {
 });
 
 // Delete an invoice with API key validation
-app.delete('/invoices/:id', apiKeyMiddleware, async (req, res) => {
+app.delete('/invoices/:id', validateApiKey, async (req, res) => {
   const id = req.params.id;
 
   try {
@@ -104,5 +135,5 @@ app.delete('/invoices/:id', apiKeyMiddleware, async (req, res) => {
 // Start the server using the PORT from the environment variable
 const port = process.env.PORT || 8000;
 app.listen(port, () => {
-  console.log("Server is listening on port " + port);
+  console.log(`Server is listening on port ${port}`);
 });
